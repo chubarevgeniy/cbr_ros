@@ -5,7 +5,7 @@ import rclpy
 
 class CANBridge(Node):
     def __init__(self):
-        super().__init__('cbr_odrive_can_bridge')
+        super().__init__('can_bridge')
         
         self.declare_parameter('can_bitrate', 500000)
         
