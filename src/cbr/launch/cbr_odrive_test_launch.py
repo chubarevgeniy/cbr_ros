@@ -8,7 +8,7 @@ def generate_launch_description():
             executable='cbr_odrive_can_bridge',
             name='motor1',
             parameters=[
-                {'can_id': 1},
+                {'can_id': 0},
                 {'joint_name': 'left_hip_joint'}
             ]
         ),
@@ -18,7 +18,33 @@ def generate_launch_description():
             name='motor2',
             parameters=[
                 {'can_id': 1},
-                {'joint_name': 'left_knee_joint'}
+                {'joint_name': 'left_knee_joint'},
+                {'homing_torque_limit': 0.025}
             ]
-        )
+        ),
+        Node(
+            package='cbr',
+            executable='cbr_odrive_can_bridge',
+            name='motor3',
+            parameters=[
+                {'can_id': 2},
+                {'joint_name': 'right_hip_joint'}
+            ]
+        ),
+        Node(
+            package='cbr',
+            executable='cbr_odrive_can_bridge',
+            name='motor4',
+            parameters=[
+                {'can_id': 3},
+                {'joint_name': 'right_knee_joint'}
+            ]
+        ),
+        Node(
+            package='cbr',
+            executable='can_bridge',
+            parameters=[
+                {'can_bitrate': 250000}
+            ]
+        ),
     ])

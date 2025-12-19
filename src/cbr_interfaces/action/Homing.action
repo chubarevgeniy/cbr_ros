@@ -1,10 +1,6 @@
 # Goal
-int32 axis_id
-int32 dir
 ---
 # Result
-float32 offset
+bool success
 ---
 # Feedback
-float32 pos
-float32 vel

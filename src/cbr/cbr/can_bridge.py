@@ -7,7 +7,7 @@ class CANBridge(Node):
     def __init__(self):
         super().__init__('can_bridge')
         
-        self.declare_parameter('can_bitrate', 500000)
+        self.declare_parameter('can_bitrate', 250000)
         
         self._load_params()
         self.bustype = 'socketcan'
@@ -29,9 +29,10 @@ class CANBridge(Node):
             arbitration_id=msg.id,
             data=bytes(msg.data),
             is_extended_id= msg.is_extended,
+            is_remote_frame=msg.is_rtr,
         )
         self.bus.send(message)
-        
+
     def timer_callback(self):
         """Polls the CAN bus for new messages and publishes them to can/rx."""
         while True:
