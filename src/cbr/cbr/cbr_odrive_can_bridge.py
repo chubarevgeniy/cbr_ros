@@ -210,6 +210,7 @@ class CBROdriveCANBridge(Node):
                             self.homing_offset = pos_estimate
                             self.homing_finish_time = self.get_clock().now()
                             self.is_homed = True
+                            self.is_homing = False
                             self.homing_start_time = None
                             # Homing complete, switch to IDLE. User must explicitly enable axis later.
                             self._reset_odrive_state(set_idle=False)
