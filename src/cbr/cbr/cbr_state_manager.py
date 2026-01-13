@@ -15,7 +15,7 @@ class CBRStateManager(Node):
     def __init__(self):
         super().__init__('cbr_state_manager')
 
-        self.declare_parameter('joints', ['left_hip_joint', 'left_knee_joint'])
+        self.declare_parameter('joints', ['left_hip_joint', 'left_knee_joint', 'right_knee_joint', 'right_hip_joint'])
         self.joints = self.get_parameter('joints').value
 
         self.action_clients = {}

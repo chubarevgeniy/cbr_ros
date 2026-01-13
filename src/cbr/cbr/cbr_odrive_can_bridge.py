@@ -6,11 +6,13 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from rclpy.action import ActionServer
 from can_msgs.msg import Frame
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from std_srvs.srv import SetBool
 from rclpy.task import Future
+from rclpy.time import Time
+from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy
 
 class ODriveCommand(IntEnum):
     """ODrive CAN Command IDs."""
@@ -41,6 +43,7 @@ class CBROdriveCANBridge(Node):
     def __init__(self):
         super().__init__('cbr_odrive_can_bridge')
         self.cb_group = ReentrantCallbackGroup()
+        self.can_cb_group = MutuallyExclusiveCallbackGroup()
         
         self.declare_parameter('can_bitrate', 250000)
         self.declare_parameter('can_id', 0)
@@ -48,7 +51,7 @@ class CBROdriveCANBridge(Node):
         self.declare_parameter('homing_speed', 2.0)
         # time to assume that joint hit stopper (seconds)
         self.declare_parameter('homing_zero_speed_confirmation_time', 1.0)
-        self.declare_parameter('homing_torque_limit', 0.05)
+        self.declare_parameter('homing_torque_limit', 0.025)
         self.declare_parameter('homing_direction', 1)
         self.declare_parameter('joint_name', 'joint0')
         self.declare_parameter('homing_current_limit', 5.0)
@@ -62,6 +65,7 @@ class CBROdriveCANBridge(Node):
         self.is_homing = False
         self.is_homed = False
         self.homing_start_time = None
+        self.homing_finish_time = None
         self.homing_offset = 0.0
         
         self.joint_state_publisher = self.create_publisher(JointState, f'state/{self.joint_name}', 10)
@@ -69,8 +73,13 @@ class CBROdriveCANBridge(Node):
             JointState, f'commands/{self.joint_name}', self.joint_command_callback, 10, callback_group=self.cb_group
         )
         self.can_publisher = self.create_publisher(Frame, f'can/tx', 10)
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
         self.can_subscriber = self.create_subscription(
-            Frame, f'can/rx', self.can_message_callback, 10, callback_group=self.cb_group
+            Frame, f'can/rx', self.can_message_callback, qos_profile, callback_group=self.can_cb_group
         )
         
         self.future_homing = None
@@ -104,11 +113,14 @@ class CBROdriveCANBridge(Node):
         if not self.is_homing and self.future_homing is None:
             self.is_homing = True
             self.future_homing = Future()
+            self.homing_start_time = None
+            self.homing_finish_time = None
+            self.is_homed = False
 
             self._publish_controller_modes(ODriveControlMode.TORQUE_CONTROL, ODriveInputMode.PASSTHROUGH)
             self._publish_limits(self.default_vel_limit, self.homing_current_limit)
-            self._publish_input_torque(self.homing_direction * self.homing_torque_limit)
             self._publish_axis_state(ODriveAxisState.CLOSED_LOOP_CONTROL)
+            self._publish_input_torque(self.homing_direction * self.homing_torque_limit)
 
             timer = self.create_timer(20.0, self._homing_timeout_callback, callback_group=self.cb_group)
 
@@ -122,18 +134,19 @@ class CBROdriveCANBridge(Node):
             self.is_homing = False
 
             if success:
-                # Homing succeeded, reset to position control
-                self._reset_odrive_state()
-
+                # Homing succeeded
+                goal_handle.succeed()
                 return Homing.Result(success=True)
             else:
                 # Homing timed out, reset and go to idle
                 self._reset_odrive_state(set_idle=True)
+                goal_handle.abort()
                 return Homing.Result(success=False)
         else:
             self.is_homing = False
             # Homing action called while already homing, reset and go to idle
             self._reset_odrive_state(set_idle=True)
+            goal_handle.abort()
             return Homing.Result(success=False)
 
     def _homing_timeout_callback(self):
@@ -171,7 +184,7 @@ class CBROdriveCANBridge(Node):
 
         if cmd_id == ODriveCommand.GET_ENCODER_ESTIMATES:
             pos_estimate, vel_estimate = struct.unpack('<ff', msg.data[:8])
-            self.get_logger().info(f"Encoder: Pos={pos_estimate:.3f}, Vel={vel_estimate:.3f}", throttle_duration_sec=0.5)
+            self.get_logger().info(f"Encoder: Pos={pos_estimate:.3f}, Vel={vel_estimate:.3f}",throttle_duration_sec=0.5)
 
             # Only publish joint state if homed
             if self.is_homed:
@@ -183,27 +196,30 @@ class CBROdriveCANBridge(Node):
                 self.joint_state_publisher.publish(joint_state_msg)
 
             # Homing logic
-            future_homing = self.future_homing
-            if self.is_homing and future_homing:
-                self.get_logger().info(f"Homing: vel_estimate={vel_estimate}")
-                if abs(vel_estimate) <= self.homing_speed_threshold:
-                    current_time = self.get_clock().now().nanoseconds / 1e9
-                    if self.homing_start_time is None:
-                        self.homing_start_time = current_time
-                        self.get_logger().info("Homing: Low velocity detected, starting confirmation timer.")
-                    elif current_time - self.homing_start_time >= self.homing_zero_speed_confirmation_time:
-                        self.get_logger().info("Homing: Stop confirmed.")
-                        self.homing_offset = pos_estimate
-                        self.is_homed = True
-                        self.homing_start_time = None
-                        if not future_homing.done():
+            if self.is_homing:
+                future_homing = self.future_homing
+                if self.is_homing and future_homing and not future_homing.done():
+                    self.get_logger().info(f"Homing: vel_estimate={vel_estimate}; pos_estimate={pos_estimate}",throttle_duration_sec=0.5)
+                    if abs(vel_estimate) <= self.homing_speed_threshold:
+                        current_time = self.get_clock().now().nanoseconds / 1e9
+                        if self.homing_start_time is None:
+                            self.homing_start_time = current_time
+                            self.get_logger().info(f"Homing: Low velocity detected, starting confirmation timer: vel_estimate={vel_estimate}; pos_estimate={pos_estimate}.",throttle_duration_sec=0.5)
+                        elif current_time - self.homing_start_time >= self.homing_zero_speed_confirmation_time:
+                            self.get_logger().info(f"Homing: Stop confirmed. pos_estimate={pos_estimate}")
+                            self.homing_offset = pos_estimate
+                            self.homing_finish_time = self.get_clock().now()
+                            self.is_homed = True
+                            self.homing_start_time = None
+                            # Homing complete, switch to IDLE. User must explicitly enable axis later.
+                            self._reset_odrive_state(set_idle=False)
                             future_homing.set_result(True)
-                else:
-                    self.homing_start_time = None # Reset timer if speed increases
+                    else:
+                        self.homing_start_time = None # Reset timer if speed increases
 
         elif cmd_id == ODriveCommand.HEARTBEAT:
             axis_error, axis_state = struct.unpack('<II', msg.data[:8])
-            self.get_logger().info(f"Heartbeat: Error={axis_error}, State={axis_state}", throttle_duration_sec=1.0)
+            self.get_logger().info(f"Heartbeat: Error={axis_error}, State={axis_state}")
             if axis_error != 0:
                 self.get_logger().error(f"ODrive Axis Error: {axis_error} | State: {axis_state}")
 
@@ -214,6 +230,12 @@ class CBROdriveCANBridge(Node):
             return
         if msg.name != [self.joint_name]:
             return
+
+        if self.homing_finish_time:
+            msg_time = Time.from_msg(msg.header.stamp)
+            if msg_time < self.homing_finish_time:
+                self.get_logger().info(f"Ignored old command: {msg.position} (Time: {msg_time.nanoseconds} < {self.homing_finish_time.nanoseconds})")
+                return
 
         if msg.position:
             # Convert joint position command to motor position command
@@ -248,13 +270,14 @@ class CBROdriveCANBridge(Node):
 
     def _reset_odrive_state(self, set_idle=False):
         """Reset ODrive to a known state after an operation."""
-        self._publish_input_torque(0.0)
-        if not set_idle:
-            self._publish_input_pos(self.homing_offset)
-        self._publish_controller_modes(ODriveControlMode.POSITION_CONTROL, ODriveInputMode.PASSTHROUGH)
-        self._publish_limits(self.default_vel_limit, self.current_limit)
         if set_idle:
             self._publish_axis_state(ODriveAxisState.IDLE)
+            return
+
+        self.get_logger().info(f"Resetting state. Homing offset: {self.homing_offset:.3f}")
+        self._publish_input_pos(self.homing_offset)
+        self._publish_limits(self.default_vel_limit, self.current_limit)
+        self._publish_controller_modes(ODriveControlMode.POSITION_CONTROL, ODriveInputMode.PASSTHROUGH)
 
 def get_can_message(id, cmd_id, data=b'', is_rtr=False):
     can_id = id << 5 | cmd_id
