@@ -6,7 +6,7 @@ from enum import IntEnum
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.task import Future
 from rclpy.time import Time
@@ -77,15 +77,17 @@ class CBROdriveCANBridge(Node):
         self.state_lock = threading.RLock() 
 
         # --- ROS Communications ---
-        self.cb_group = ReentrantCallbackGroup()
+        self.pub_group = MutuallyExclusiveCallbackGroup()
+        self.sub_group = MutuallyExclusiveCallbackGroup()
+        self.service_group = ReentrantCallbackGroup()
         
         self.joint_state_publisher = self.create_publisher(JointState, f'state/{self.joint_name}', 10)
         self.joint_command_subscriber = self.create_subscription(
-            JointState, f'commands/{self.joint_name}', self.joint_command_callback, 10, callback_group=self.cb_group
+            JointState, f'commands/{self.joint_name}', self.joint_command_callback, 10, callback_group=self.sub_group
         )
         
-        self.homing_server = ActionServer(self, Homing, f'home/{self.joint_name}', self.home_service_callback, callback_group=self.cb_group)
-        self.axis_state_server = self.create_service(SetBool, f'set_axis_state/{self.joint_name}', self.set_axis_state_callback, callback_group=self.cb_group)
+        self.homing_server = ActionServer(self, Homing, f'home/{self.joint_name}', self.home_service_callback, callback_group=self.service_group)
+        self.axis_state_server = self.create_service(SetBool, f'set_axis_state/{self.joint_name}', self.set_axis_state_callback, callback_group=self.service_group)
 
         # --- CAN Bus Initialization (Direct) ---
         try:
@@ -111,7 +113,7 @@ class CBROdriveCANBridge(Node):
             raise e
 
         # Timer to poll for feedback (Replaces the loop in the original architecture)
-        self.feedback_timer = self.create_timer(0.01, self._feedback_timer_callback, callback_group=self.cb_group)
+        self.feedback_timer = self.create_timer(0.01, self._feedback_timer_callback, callback_group=self.pub_group)
 
     def _load_params(self):
         self.can_interface = self.get_parameter('can_interface').value
@@ -133,12 +135,6 @@ class CBROdriveCANBridge(Node):
     # --------------------------------------------------------------------------
 
     def _on_can_message(self, msg: can.Message):
-        """
-        Callback triggered by python-can Notifier background thread.
-        Contains the exact logic from the original `can_message_callback`.
-        """
-        # Note: Hardware filtering already ensures msg.arbitration_id matches our axis,
-        # but the check below is kept for safety.
         if msg.arbitration_id >> 5 != self.can_id:
             return
 
@@ -147,27 +143,23 @@ class CBROdriveCANBridge(Node):
         if cmd_id == ODriveCommand.GET_ENCODER_ESTIMATES:
             pos_estimate, vel_estimate = struct.unpack('<ff', msg.data[:8])
             
-            # Log with throttle to avoid console spam
-            # (Note: rclpy logging isn't strictly thread-safe but usually works)
-            # self.get_logger().info(f"Encoder: Pos={pos_estimate:.3f}, Vel={vel_estimate:.3f}", throttle_duration_sec=0.5)
+            # Variables to store data for publishing outside the lock
+            msg_to_publish = None 
 
             with self.state_lock:
-                # 1. Publish Joint State
+                # --- 1. Prepare Joint State (Calculation only) ---
                 if self.is_homed:
-                    joint_state_msg = JointState()
-                    joint_state_msg.header.stamp = self.get_clock().now().to_msg()
-                    joint_state_msg.name = [self.joint_name]
-                    joint_state_msg.position = [((pos_estimate - self.homing_offset) / self.reduction) * -self.homing_direction]
-                    joint_state_msg.velocity = [(vel_estimate / self.reduction) * -self.homing_direction]
-                    self.joint_state_publisher.publish(joint_state_msg)
+                    msg_to_publish = JointState()
+                    msg_to_publish.header.stamp = self.get_clock().now().to_msg()
+                    msg_to_publish.name = [self.joint_name]
+                    msg_to_publish.position = [((pos_estimate - self.homing_offset) / self.reduction) * -self.homing_direction]
+                    msg_to_publish.velocity = [(vel_estimate / self.reduction) * -self.homing_direction]
 
-                # 2. Homing Logic (Preserved exactly)
+                # --- 2. Homing Logic (State updates only) ---
+                # (This logic modifies internal state, so it MUST stay in the lock)
                 if self.is_homing:
                     future_homing = self.future_homing
-                    # Check if future exists and is not done
                     if self.is_homing and future_homing and not future_homing.done():
-                        # self.get_logger().info(f"Homing... Vel: {vel_estimate}", throttle_duration_sec=0.5)
-                        
                         if abs(vel_estimate) <= self.homing_speed_threshold:
                             current_time = self.get_clock().now().nanoseconds / 1e9
                             
@@ -184,16 +176,21 @@ class CBROdriveCANBridge(Node):
                                 self.is_homing = False
                                 self.homing_start_time = None
                                 
-                                # Switch state
+                                # Note: _reset_odrive_state sends CAN, but doing it here 
+                                # on a state transition is acceptable as it's rare.
                                 self._reset_odrive_state(set_idle=False)
                                 
-                                # Set Future Result
                                 try:
                                     future_homing.set_result(True)
                                 except Exception as e:
                                     self.get_logger().warn(f"Failed to set future result: {e}")
                         else:
                             self.homing_start_time = None
+
+            # --- 3. Publish (OUTSIDE THE LOCK) ---
+            # This allows the command thread to grab the lock while we talk to DDS
+            if msg_to_publish:
+                self.joint_state_publisher.publish(msg_to_publish)
 
         elif cmd_id == ODriveCommand.HEARTBEAT:
             axis_error, axis_state = struct.unpack('<II', msg.data[:8])
@@ -270,6 +267,9 @@ class CBROdriveCANBridge(Node):
         return response
 
     def joint_command_callback(self, msg: JointState):
+        # Variables to store command to send outside lock
+        command_position = None
+
         with self.state_lock:
             if not self.is_homed or self.is_homing:
                 return
@@ -282,8 +282,16 @@ class CBROdriveCANBridge(Node):
                     return
 
             if msg.position:
-                motor_position_command = (msg.position[0] * -self.homing_direction * self.reduction) + self.homing_offset
-                self._publish_input_pos(motor_position_command)
+                # Calculate the command value
+                if msg.position[0] > 0:
+                    command_position = (msg.position[0] * -self.homing_direction * self.reduction) + self.homing_offset
+                else:
+                    command_position = self.homing_offset
+
+        # --- Send CAN Message (OUTSIDE THE LOCK) ---
+        # This allows the receive thread to grab the lock while we talk to the CAN socket
+        if command_position is not None:
+            self._publish_input_pos(command_position)
 
     # --------------------------------------------------------------------------
     # CAN Sending Helpers (Adjusted for python-can)

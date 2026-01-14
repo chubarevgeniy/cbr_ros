@@ -24,9 +24,10 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'cbr_state_manager = cbr.cbr_state_manager:main',
+            'cli_controller = cbr.cli_controller:main',
             'cbr_odrive_can_bridge = cbr.cbr_odrive_can_bridge:main',
             'can_bridge = cbr.can_bridge:main',
+            'debug_joy_controller = cbr.debug_joy_controller:main'
         ],
     },
 )

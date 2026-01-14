@@ -1,22 +1,46 @@
-import threading
-import sys
 import traceback
 
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, Joy
 from cbr_interfaces.action import Homing
 from std_srvs.srv import SetBool
 from action_msgs.msg import GoalStatus
 
-
-class CBRStateManager(Node):
+class ControllerState:
     def __init__(self):
-        super().__init__('cbr_state_manager')
+        self.get_from_joy(Joy(axes=[0 for i in range(8)], buttons=[0 for i in range(16)]))
+    
+    def get_from_joy(self, msg: Joy):
+        self.r_v = msg.axes[3]
+        self.r_h = msg.axes[2]
+        self.l_v = msg.axes[1]
+        self.l_h = msg.axes[0]
+        self.left_right = msg.axes[6]
+        self.up_down = msg.axes[7]
+        self.l_trig = msg.axes[5]
+        self.r_trig = msg.axes[4]
+        self.x = msg.buttons[3]
+        self.y = msg.buttons[4]
+        self.a = msg.buttons[0]
+        self.b = msg.buttons[1]
+        self.burger = msg.buttons[11]
+        self.xbox = msg.buttons[12]
+        self.squares = msg.buttons[10]
+        self.l_joy_click = msg.buttons[13]
+        self.r_joy_click = msg.buttons[14]
+        self.l_button = msg.buttons[6]
+        self.r_button = msg.buttons[7]
+
+
+class DebugJoyController(Node):
+    def __init__(self):
+        super().__init__('debug_joy_controller')
 
         self.declare_parameter('joints', ['left_hip_joint', 'left_knee_joint', 'right_knee_joint', 'right_hip_joint'])
         self.joints = self.get_parameter('joints').value
+        self.smoothness = 0.9
 
         self.action_clients = {}
         self.publishers_ = {}
@@ -32,18 +56,55 @@ class CBRStateManager(Node):
             # Service Client for Axis State
             self.service_clients[joint] = self.create_client(SetBool, f'set_axis_state/{joint}')
 
-        self.get_logger().info(f'State Manager initialized for joints: {self.joints}')
-        self.print_help()
+        self.get_logger().info(f'Debug Joy Controller initialized for joints: {self.joints}')
 
-    def print_help(self):
-        print("\nCommands:")
-        print("  home <joint_name>      - Trigger homing")
-        print("  pos <joint_name> <val> - Send position command")
-        print("  state <joint_name> <on|off> - Set axis state")
-        print("  list                   - List managed joints")
-        print("  help                   - Show this help")
-        print("  quit                   - Exit")
-        print("> ", end="", flush=True)
+        self.joy_sub = self.create_subscription(Joy, '/joy', self.joy_callback, 10)
+        self.timer = self.create_timer(1.0/50.0, self.timer_callback)
+
+        self.controller_state = ControllerState()
+        self.prev_controller_state = ControllerState()
+        self.joint_positions = {joint: 0.0 for joint in self.joints}
+
+    def joy_callback(self, msg):
+        self.controller_state.get_from_joy(msg)
+
+        # Button logic (Edge detection)
+        # A button: Enable
+        if self.controller_state.a and not self.prev_controller_state.a:
+            self.set_all_states(True)
+
+        # B button: Disable
+        if self.controller_state.b and not self.prev_controller_state.b:
+            self.set_all_states(False)
+
+        # X button: Home
+        if self.controller_state.x and not self.prev_controller_state.x:
+            self.home_all()
+
+        self.prev_controller_state.get_from_joy(msg)
+
+    def timer_callback(self):
+        # Update positions smoothly
+        target_map = {
+            'left_hip_joint': self.controller_state.l_v,
+            'left_knee_joint': self.controller_state.l_h,
+            'right_hip_joint': self.controller_state.r_v,
+            'right_knee_joint': self.controller_state.r_h
+        }
+
+        for joint in self.joints:
+            if joint in target_map:
+                target = target_map[joint]
+                self.joint_positions[joint] = self.joint_positions[joint] * self.smoothness + (1-self.smoothness) * target
+                self.send_position_command(joint, self.joint_positions[joint])
+
+    def set_all_states(self, enable):
+        for joint in self.joints:
+            self.send_state_command(joint, enable)
+
+    def home_all(self):
+        for joint in self.joints:
+            self.send_homing_goal(joint)
 
     def send_homing_goal(self, joint_name):
         if joint_name not in self.action_clients:
@@ -106,7 +167,7 @@ class CBRStateManager(Node):
         msg.position = [float(position)]
 
         self.publishers_[joint_name].publish(msg)
-        self.get_logger().info(f'Published position {position} for {joint_name}')
+        # self.get_logger().info(f'Published position {position} for {joint_name}')
 
     def send_state_command(self, joint_name, enable):
         if joint_name not in self.service_clients:
@@ -130,64 +191,9 @@ class CBRStateManager(Node):
         except Exception as e:
             self.get_logger().error(f'Service call failed for {joint_name}: {e}')
 
-def input_loop(node):
-    try:
-        while rclpy.ok():
-            line = sys.stdin.readline()
-            if not line:
-                print("Input stream closed (EOF). Exiting.")
-                break
-            line = line.strip()
-            if not line:
-                print("> ", end="", flush=True)
-                continue
-
-            parts = line.split()
-            cmd = parts[0]
-
-            if cmd == 'quit':
-                break
-            elif cmd == 'list':
-                print(f"Joints: {node.joints}")
-            elif cmd == 'help':
-                node.print_help()
-                continue
-            elif cmd == 'home':
-                if len(parts) < 2:
-                    print("Usage: home <joint_name>")
-                else:
-                    node.send_homing_goal(parts[1])
-            elif cmd == 'pos':
-                if len(parts) < 3:
-                    print("Usage: pos <joint_name> <position>")
-                else:
-                    try:
-                        node.send_position_command(parts[1], float(parts[2]))
-                    except ValueError:
-                        print("Invalid position value")
-            elif cmd == 'state':
-                if len(parts) < 3:
-                    print("Usage: state <joint_name> <on|off>")
-                else:
-                    state_val = parts[2].lower()
-                    enable = state_val in ['on', 'true', '1']
-                    node.send_state_command(parts[1], enable)
-            else:
-                print("Unknown command")
-
-            print("> ", end="", flush=True)
-    except Exception as e:
-        print(f"Error in input loop: {e}")
-    finally:
-        rclpy.shutdown()
-
 def main(args=None):
     rclpy.init(args=args)
-    node = CBRStateManager()
-
-    # Start input thread
-    input_thread = threading.Thread(target=input_loop, args=(node,), daemon=True)
-    input_thread.start()
+    node = DebugJoyController()
 
     try:
         rclpy.spin(node)
