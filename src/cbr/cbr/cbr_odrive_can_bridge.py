@@ -111,7 +111,7 @@ class CBROdriveCANBridge(Node):
             raise e
 
         # Timer to poll for feedback (Replaces the loop in the original architecture)
-        self.feedback_timer = self.create_timer(0.003, self._feedback_timer_callback, callback_group=self.cb_group)
+        self.feedback_timer = self.create_timer(0.01, self._feedback_timer_callback, callback_group=self.cb_group)
 
     def _load_params(self):
         self.can_interface = self.get_parameter('can_interface').value
