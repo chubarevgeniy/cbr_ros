@@ -35,7 +35,7 @@ class CANBridge(Node):
 
     def timer_callback(self):
         """Polls the CAN bus for new messages and publishes them to can/rx."""
-        while True:
+        for i in range(10):
             # Use timeout=0 for non-blocking check
             can_msg = self.bus.recv(timeout=0)
             if can_msg is None:
