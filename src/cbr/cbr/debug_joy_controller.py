@@ -2,11 +2,8 @@ import traceback
 
 import rclpy
 from rclpy.node import Node
-from rclpy.action import ActionClient
 from sensor_msgs.msg import JointState, Joy
-from cbr_interfaces.action import Homing
-from std_srvs.srv import SetBool
-from action_msgs.msg import GoalStatus
+from std_msgs.msg import Bool
 
 class ControllerState:
     def __init__(self):
@@ -42,19 +39,19 @@ class DebugJoyController(Node):
         self.joints = self.get_parameter('joints').value
         self.smoothness = 0.9
 
-        self.action_clients = {}
+        self.homing_pubs = {}
         self.publishers_ = {}
-        self.service_clients = {}
+        self.state_pubs = {}
 
         for joint in self.joints:
-            # Action Client for Homing
-            self.action_clients[joint] = ActionClient(self, Homing, f'home/{joint}')
+            # Publisher for Homing Trigger
+            self.homing_pubs[joint] = self.create_publisher(Bool, f'home/{joint}', 10)
 
             # Publisher for Position Commands
             self.publishers_[joint] = self.create_publisher(JointState, f'commands/{joint}', 10)
 
-            # Service Client for Axis State
-            self.service_clients[joint] = self.create_client(SetBool, f'set_axis_state/{joint}')
+            # Publisher for Axis State
+            self.state_pubs[joint] = self.create_publisher(Bool, f'set_axis_state/{joint}', 10)
 
         self.get_logger().info(f'Debug Joy Controller initialized for joints: {self.joints}')
 
@@ -107,54 +104,14 @@ class DebugJoyController(Node):
             self.send_homing_goal(joint)
 
     def send_homing_goal(self, joint_name):
-        if joint_name not in self.action_clients:
+        if joint_name not in self.homing_pubs:
             self.get_logger().error(f'Unknown joint: {joint_name}')
             return
 
-        client = self.action_clients[joint_name]
-
-        if not client.wait_for_server(timeout_sec=1.0):
-            self.get_logger().error(f'Action server not available for {joint_name}')
-            return
-
-        goal_msg = Homing.Goal()
-        self.get_logger().info(f'Sending homing goal for {joint_name}...')
-
-        future = client.send_goal_async(goal_msg)
-        future.add_done_callback(lambda f: self.goal_response_callback(f, joint_name))
-
-    def goal_response_callback(self, future, joint_name):
-        try:
-            goal_handle = future.result()
-        except Exception as e:
-            self.get_logger().error(f'Service call failed for {joint_name}: {e}')
-            return
-
-        if not goal_handle.accepted:
-            self.get_logger().info(f'Homing goal rejected for {joint_name}')
-            return
-
-        self.get_logger().info(f'Homing goal accepted for {joint_name}')
-
-        result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(lambda f: self.get_result_callback(f, joint_name))
-
-    def get_result_callback(self, future, joint_name):
-        try:
-            wrapped_result = future.result()
-            result = wrapped_result.result
-            status = wrapped_result.status
-        except Exception as e:
-            self.get_logger().error(f'Failed to get result for {joint_name}: {e}')
-            return
-
-        if status == GoalStatus.STATUS_SUCCEEDED:
-            if hasattr(result, 'success') and result.success:
-                self.get_logger().info(f'Homing succeeded for {joint_name}')
-            else:
-                self.get_logger().info(f'Homing finished, but success flag is False or missing. Result: {result}')
-        else:
-            self.get_logger().info(f'Homing action failed with status: {status}')
+        msg = Bool()
+        msg.data = True
+        self.homing_pubs[joint_name].publish(msg)
+        self.get_logger().info(f'Sent homing trigger for {joint_name}')
 
     def send_position_command(self, joint_name, position):
         if joint_name not in self.publishers_:
@@ -170,26 +127,14 @@ class DebugJoyController(Node):
         # self.get_logger().info(f'Published position {position} for {joint_name}')
 
     def send_state_command(self, joint_name, enable):
-        if joint_name not in self.service_clients:
+        if joint_name not in self.state_pubs:
             self.get_logger().error(f'Unknown joint: {joint_name}')
             return
 
-        client = self.service_clients[joint_name]
-        if not client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().error(f'Service not available for {joint_name}')
-            return
-
-        req = SetBool.Request()
-        req.data = enable
-        future = client.call_async(req)
-        future.add_done_callback(lambda f: self.state_response_callback(f, joint_name))
-
-    def state_response_callback(self, future, joint_name):
-        try:
-            response = future.result()
-            self.get_logger().info(f'State change for {joint_name}: {response.message}')
-        except Exception as e:
-            self.get_logger().error(f'Service call failed for {joint_name}: {e}')
+        msg = Bool()
+        msg.data = enable
+        self.state_pubs[joint_name].publish(msg)
+        self.get_logger().info(f'Sent state command {enable} for {joint_name}')
 
 def main(args=None):
     rclpy.init(args=args)
