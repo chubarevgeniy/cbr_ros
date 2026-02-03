@@ -28,7 +28,8 @@ setup(
             'cbr_odrive_can_bridge = cbr.cbr_odrive_can_bridge:main',
             'can_bridge = cbr.can_bridge:main',
             'debug_joy_controller = cbr.debug_joy_controller:main',
-            'base_bridge = cbr.base_bridge:main'
+            'base_bridge = cbr.base_bridge:main',
+            'brain_node = cbr.brain_node:main'
         ],
     },
 )
