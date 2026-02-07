@@ -33,6 +33,7 @@ class BrainNode(Node):
         self.timer = self.create_timer(1.0/50.0, self.timer_callback)
         
         self.joint_states = {}
+        self.static_state = {}
         self.base_state = {}
         
         self.homing_pubs = {}
@@ -84,7 +85,8 @@ class BrainNode(Node):
         if self.controller_state.a and not self.prev_controller_state.a:
             self.get_logger().info(f"Set Active State")
             self.set_all_states(True)
-            self.static_state = copy.deepcopy(self.joint_states)
+            for name in self.joints:
+                self.static_state[name] = self.joint_states[name]
             self.mode = StateMode.STATIC
 
         # X button: Passive mode

@@ -43,7 +43,7 @@ class CBROdriveCANBridge(Node):
         
         # --- Parameters ---
         self.declare_parameter('can_interface', 'can0')
-        self.declare_parameter('can_bitrate', 250000)
+        self.declare_parameter('can_bitrate', 500000)
         self.declare_parameter('can_id', 0)
         
         self.declare_parameter('homing_speed_threshold', 1.0)
@@ -203,7 +203,6 @@ class CBROdriveCANBridge(Node):
                 self.is_homed = False
 
                 self._publish_controller_modes(ODriveControlMode.TORQUE_CONTROL, ODriveInputMode.PASSTHROUGH)
-                self._publish_limits(self.default_vel_limit, self.homing_current_limit)
                 self._publish_axis_state(ODriveAxisState.CLOSED_LOOP_CONTROL)
                 self._publish_input_torque(self.homing_direction * self.homing_torque_limit)
         else:
@@ -235,11 +234,7 @@ class CBROdriveCANBridge(Node):
                 return
 
         if msg.position:
-            # Calculate the command value
-            if msg.position[0] > 0:
-                command_position = (msg.position[0] * -self.homing_direction * self.reduction) + self.homing_offset
-            else:
-                command_position = self.homing_offset
+            command_position = (msg.position[0] * -self.homing_direction * self.reduction) + self.homing_offset
 
         if command_position is not None:
             self._publish_input_pos(command_position)
@@ -290,7 +285,6 @@ class CBROdriveCANBridge(Node):
         
         self.get_logger().info(f"Resetting state. Homing offset: {self.homing_offset:.3f}")
         self._publish_input_pos(self.homing_offset)
-        self._publish_limits(self.default_vel_limit, self.current_limit)
         self._publish_controller_modes(ODriveControlMode.POSITION_CONTROL, ODriveInputMode.PASSTHROUGH)
 
     def destroy_node(self):

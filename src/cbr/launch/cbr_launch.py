@@ -8,7 +8,7 @@ def generate_launch_description():
             executable='cbr_odrive_can_bridge',
             name='motor1',
             parameters=[
-                {'can_id': 0},
+                {'can_id': 5},
                 {'joint_name': 'left_knee_joint'},
                 {'homing_direction': 1}
             ]
@@ -56,7 +56,7 @@ def generate_launch_description():
         #     package='cbr',
         #     executable='can_bridge',
         #     parameters=[
-        #         {'can_bitrate': 250000}
+        #         {'can_bitrate': 500000}
         #     ]
         # ),
     ])
