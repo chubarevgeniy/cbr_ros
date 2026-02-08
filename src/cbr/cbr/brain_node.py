@@ -35,6 +35,10 @@ class BrainNode(Node):
         self.joint_states = {}
         self.static_state = {}
         self.base_state = {}
+        self.commands_ai = {
+            'stay': False,
+            'speed': 0,
+        }
         
         self.homing_pubs = {'home_base', self.create_publisher(Bool, 'home_base', 10)}
         self.publishers_ = {}
@@ -101,6 +105,19 @@ class BrainNode(Node):
             self.get_logger().info(f"Set Passive State")
             self.set_all_states(False)
             self.mode = StateMode.PASSIVE
+            
+        if self.controller_state.y and not self.prev_controller_state.y:
+            self.get_logger().info(f"Set AI State")
+            self.mode = StateMode.AI
+            
+        if self.mode == StateMode.AI and self.controller_state.up_down > 0.5:
+            self.commands_ai['stay'] = True
+            
+        if self.mode == StateMode.AI and self.controller_state.up_down < -0.5:
+            self.commands_ai['stay'] = False
+            
+        if self.mode == StateMode.AI:
+            self.commands_ai['speed'] = self.controller_state.l_v
 
         self.prev_controller_state.get_from_joy(msg)
         
@@ -147,7 +164,7 @@ class BrainNode(Node):
     def timer_callback(self):
         current_time = self.get_clock().now().nanoseconds / 1e9
         if self.mode == StateMode.HOMING and not(self.homing_start_time is None) and current_time-self.homing_start_time>self.homing_time:
-            self.mode = StateMode.PASSIVE
+            self.get_logger().error(f'Action after homming timeout can be triggered')
         if self.mode == StateMode.STATIC:
             for joint in self.joints:
                 self.send_position_command(joint,self.static_state[joint]['position'])
