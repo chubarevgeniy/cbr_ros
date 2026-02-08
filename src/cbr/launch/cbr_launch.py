@@ -10,7 +10,7 @@ def generate_launch_description():
             parameters=[
                 {'can_id': 5},
                 {'joint_name': 'left_knee_joint'},
-                {'homing_direction': 1}
+                {'homing_direction': -1}
             ]
         ),
         Node(
@@ -28,9 +28,9 @@ def generate_launch_description():
             executable='cbr_odrive_can_bridge',
             name='motor3',
             parameters=[
-                {'can_id': 2},
+                {'can_id': 3},
                 {'joint_name': 'right_hip_joint'},
-                {'homing_direction': 1}
+                {'homing_direction': -1}
             ]
         ),
         Node(
@@ -38,7 +38,7 @@ def generate_launch_description():
             executable='cbr_odrive_can_bridge',
             name='motor4',
             parameters=[
-                {'can_id': 3},
+                {'can_id': 2},
                 {'joint_name': 'right_knee_joint'},
                 {'homing_direction': 1}
             ]
@@ -52,11 +52,14 @@ def generate_launch_description():
                 {'homing_time': 10.0}
             ]
         ),
-        # Node(
-        #     package='cbr',
-        #     executable='can_bridge',
-        #     parameters=[
-        #         {'can_bitrate': 500000}
-        #     ]
-        # ),
+        Node(
+            package='joy_linux',
+            executable='joy_linux_node',
+            name='joy_linux_node',
+        ),
+        Node(
+            package='cbr',
+            executable='base_bridge',
+            name='base_bridge',
+        ),
     ])

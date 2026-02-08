@@ -33,6 +33,7 @@
         "--ipc=host",
         "--privileged",
         "--device=/dev/input",
+        "-v", "/dev:/dev",
         "-e", "DISPLAY=${env:DISPLAY}"
     ],
     "mounts": [

@@ -36,10 +36,10 @@ class BrainNode(Node):
         self.static_state = {}
         self.base_state = {}
         
-        self.homing_pubs = {}
+        self.homing_pubs = {'home_base', self.create_publisher(Bool, 'home_base', 10)}
         self.publishers_ = {}
-        self.subs_ = {}
         self.state_pubs = {}
+        self.subs_ = {}
 
         for joint in self.joints:
             # Publisher for Homing Trigger
@@ -80,6 +80,13 @@ class BrainNode(Node):
             self.mode = StateMode.HOMING
             current_time = self.get_clock().now().nanoseconds / 1e9
             self.homing_start_time = current_time
+            
+        # Squeares button: Resete/Home Base state
+        if self.controller_state.squares and not self.prev_controller_state.squares:
+            self.get_logger().info(f"Reset Base")
+            msg = Bool()
+            msg.data = True
+            self.homing_pubs['home_base'].publish(msg)
 
         # A button: Active
         if self.controller_state.a and not self.prev_controller_state.a:
