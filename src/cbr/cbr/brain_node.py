@@ -40,11 +40,13 @@ class BrainNode(Node):
             'speed': 0,
         }
         
-        self.homing_pubs = {'home_base', self.create_publisher(Bool, 'home_base', 10)}
+        self.homing_pubs = {}
         self.publishers_ = {}
         self.state_pubs = {}
         self.subs_ = {}
 
+        self.homing_pubs['home_base'] = self.create_publisher(Bool, 'home_base', 10)
+        
         for joint in self.joints:
             # Publisher for Homing Trigger
             self.homing_pubs[joint] = self.create_publisher(Bool, f'home/{joint}', 10)
