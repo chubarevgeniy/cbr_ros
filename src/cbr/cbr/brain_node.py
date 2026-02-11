@@ -1,6 +1,7 @@
 from enum import IntEnum
 import traceback
 from cbr.controller import ControllerState
+from cbr.policy import PolicyRunner
 from rclpy.node import Node
 from sensor_msgs.msg import JointState, Joy
 from std_msgs.msg import Bool
@@ -28,13 +29,18 @@ class BrainNode(Node):
         
         self.declare_parameter('joints', ['left_hip_joint', 'left_knee_joint', 'right_knee_joint', 'right_hip_joint'])
         self.declare_parameter('homing_time',10.0)
+        self.declare_parameter('policy_path','')
         self._load_params()
+        
+        self.policy = PolicyRunner(self.path)
         
         self.timer = self.create_timer(1.0/50.0, self.timer_callback)
         
         self.joint_states = {}
         self.static_state = {}
         self.base_state = {}
+        self.prev_policy_joint_states = None
+        self.prev_policy_base_state = None
         self.commands_ai = {
             'stay': False,
             'speed': 0,
@@ -65,6 +71,7 @@ class BrainNode(Node):
         self.subs_['position'] = self.create_subscription(JointState, f'state/position', self.axis_subscriber, 1)
             
     def _load_params(self):
+        self.policy_path = self.get_paremeter('policy_path').value
         self.joints = self.get_parameter('joints').value
         self.homing_time = self.get_parameter('homing_time').value
         
@@ -98,6 +105,12 @@ class BrainNode(Node):
         if self.controller_state.a and not self.prev_controller_state.a:
             self.get_logger().info(f"Set Active State")
             self.set_all_states(True)
+            self.prev_policy_joint_states = None
+            self.prev_policy_base_state = None
+            self.commands_ai = {
+                'stay': False,
+                'speed': 0,
+            }
             for name in self.joints:
                 self.static_state[name] = self.joint_states[name]
             self.mode = StateMode.STATIC
@@ -106,6 +119,12 @@ class BrainNode(Node):
         if self.controller_state.x:
             self.get_logger().info(f"Set Passive State")
             self.set_all_states(False)
+            self.prev_policy_joint_states = None
+            self.prev_policy_base_state = None
+            self.commands_ai = {
+                'stay': False,
+                'speed': 0,
+            }
             self.mode = StateMode.PASSIVE
             
         if self.controller_state.y and not self.prev_controller_state.y:
@@ -171,8 +190,59 @@ class BrainNode(Node):
             for joint in self.joints:
                 self.send_position_command(joint,self.static_state[joint]['position'])
         if self.mode == StateMode.AI:
-            # take all states and publish commands
-            pass
+            self.act_ai()
+            
+    def act_ai(self):
+        if self.prev_policy_joint_states is None:
+            self.prev_policy_joint_states = {}
+            for key in self.joint_states.keys():
+                self.prev_policy_joint_states[key] = self.joint_states[key]
+        if self.prev_policy_base_state is None:
+            self.prev_policy_base_state = {}
+            for key in self.base_state.keys():
+                self.prev_policy_base_state[key] = self.base_state[key]
+        
+        left_hip_pos_units = self.joint_states['left_hip_joint']['position']
+        left_hip_vel_units = self.joint_states['left_hip_joint']['velocity']
+        right_hip_pos_units = self.joint_states['right_hip_joint']['position']
+        right_hip_vel_units = self.joint_states['right_hip_joint']['velocity']
+        left_knee_pos_units = self.joint_states['left_knee_joint']['position'] - left_hip_pos_units
+        left_knee_vel_units = self.joint_states['left_knee_joint']['velocity'] - left_hip_vel_units
+        right_knee_pos_units = self.joint_states['right_knee_joint']['position'] - right_hip_pos_units
+        right_knee_vel_units = self.joint_states['right_knee_joint']['velocity'] - right_hip_vel_units
+        commands = self.policy([
+            self.base_state['height']['position'],
+            self.base_state['height']['velocity'],
+            self.base_state['position']['position'],
+            self.base_state['position']['velocity'],
+            self.base_state['tilt']['position'],
+            self.base_state['tilt']['velocity'],
+            left_knee_pos_units,
+            left_knee_vel_units,
+            right_knee_pos_units,
+            right_knee_vel_units,
+            left_hip_pos_units,
+            left_hip_vel_units,
+            right_hip_pos_units,
+            right_hip_vel_units
+        ])
+        
+        for key in self.joint_states.keys():
+            self.prev_policy_joint_states[key] = self.joint_states[key]
+        for key in self.base_state.keys():
+            self.prev_policy_base_state[key] = self.base_state[key]
+            
+        command_left_hip = commands[0]
+        command_right_hip = commands[1]
+        command_left_knee = commands[2] + command_left_hip
+        command_right_knee = commands[3] + command_right_hip
+        self.send_position_command('left_hip_joint', command_left_hip)
+        self.send_position_command('right_hip_joint', command_right_hip)
+        self.send_position_command('left_knee_joint', command_left_knee)
+        self.send_position_command('right_knee_joint', command_right_knee)
+                
+            
+            
         
 def main(args=None):
     rclpy.init(args=args)

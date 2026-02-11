@@ -17,6 +17,7 @@
   <depend>joy_linux</depend>
   <depend>rcl_interfaces</depend>
   <depend>rclpy</depend>
+  <depend>torch</depend>
   <depend>sensor_msgs</depend>
   <depend>can_msgs</depend>
 
