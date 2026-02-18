@@ -8,6 +8,8 @@ from std_msgs.msg import Bool
 from rclpy.time import Time
 import copy
 import rclpy
+import torch
+import numpy as np
 
 class StateMode(IntEnum):
     """State Modes."""
@@ -33,6 +35,7 @@ class BrainNode(Node):
         self._load_params()
         
         self.policy = PolicyRunner(self.path)
+        self.targets = None
         
         self.timer = self.create_timer(1.0/50.0, self.timer_callback)
         
@@ -129,6 +132,7 @@ class BrainNode(Node):
             
         if self.controller_state.y and not self.prev_controller_state.y:
             self.get_logger().info(f"Set AI State")
+            self.targets = None
             self.mode = StateMode.AI
             
         if self.mode == StateMode.AI and self.controller_state.up_down > 0.5:
@@ -210,36 +214,43 @@ class BrainNode(Node):
         left_knee_vel_units = self.joint_states['left_knee_joint']['velocity'] - left_hip_vel_units
         right_knee_pos_units = self.joint_states['right_knee_joint']['position'] - right_hip_pos_units
         right_knee_vel_units = self.joint_states['right_knee_joint']['velocity'] - right_hip_vel_units
-        commands = self.policy([
-            self.base_state['height']['position'],
-            self.base_state['height']['velocity'],
-            self.base_state['position']['position'],
-            self.base_state['position']['velocity'],
-            self.base_state['tilt']['position'],
-            self.base_state['tilt']['velocity'],
-            left_knee_pos_units,
-            left_knee_vel_units,
-            right_knee_pos_units,
-            right_knee_vel_units,
-            left_hip_pos_units,
-            left_hip_vel_units,
-            right_hip_pos_units,
-            right_hip_vel_units
-        ])
+        if self.targets is None:
+            self.targets = torch.Tensor([right_hip_pos_units, -left_hip_pos_units, -right_knee_pos_units, left_knee_pos_units])*2.0*np.pi
+        actions = self.policy(torch.cat([
+            self.base_state['height']['position']*2.0*np.pi,
+            self.base_state['tilt']['position']*2.0*np.pi,
+            right_hip_pos_units*2.0*np.pi,
+            -left_hip_pos_units*2.0*np.pi,
+            -right_knee_pos_units*2.0*np.pi,
+            left_knee_pos_units*2.0*np.pi,
+            self.base_state['position']['velocity']*2.0*np.pi,
+            self.base_state['height']['velocity']*2.0*np.pi,
+            self.base_state['tilt']['velocity']*2.0*np.pi,
+            left_hip_vel_units*2.0*np.pi,
+            -right_hip_vel_units*2.0*np.pi,
+            -left_knee_vel_units*2.0*np.pi,
+            right_knee_vel_units*2.0*np.pi,
+            0.0 if self.commands_ai['stay'] else 1.0,
+            self.commands_ai['speed'],
+            self.targets,
+        ]))
         
         for key in self.joint_states.keys():
             self.prev_policy_joint_states[key] = self.joint_states[key]
         for key in self.base_state.keys():
             self.prev_policy_base_state[key] = self.base_state[key]
-            
-        command_left_hip = commands[0]
-        command_right_hip = commands[1]
-        command_left_knee = commands[2] + command_left_hip
-        command_right_knee = commands[3] + command_right_hip
-        self.send_position_command('left_hip_joint', command_left_hip)
-        self.send_position_command('right_hip_joint', command_right_hip)
-        self.send_position_command('left_knee_joint', command_left_knee)
-        self.send_position_command('right_knee_joint', command_right_knee)
+        
+        scaled_actions_isaac_conf = actions * 0.1
+        self.targets += torch.Tensor(scaled_actions_isaac_conf)
+        right_h_desired = self.targets[0]/2.0/np.pi
+        left_h_desired = -self.targets[1]/2.0/np.pi
+        right_k_desired = -self.targets[2]/2.0/np.pi
+        left_k_desired = self.targets[3]/2.0/np.pi
+        
+        self.send_position_command('right_hip_joint', right_h_desired)
+        self.send_position_command('left_hip_joint', left_h_desired)
+        self.send_position_command('right_knee_joint', right_k_desired - right_h_desired)
+        self.send_position_command('left_knee_joint', left_k_desired - left_h_desired)
                 
             
             
