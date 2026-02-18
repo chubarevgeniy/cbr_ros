@@ -59,3 +59,9 @@ You can find the device name directly, but be aware that the number (`0`, `1`, `
     ip link show can0
     ```
     You should see `state UP` in the output.
+
+
+## Motors
+P_isaac = (p_odrive * d_odrive * ratio**2) / (2 * PI)
+D_isaac = (d_odrive * ratio**2) / (2 * PI)
+if reducer reduces speed, then ratio is considered > 1
